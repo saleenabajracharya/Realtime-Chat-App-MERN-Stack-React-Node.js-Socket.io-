@@ -2,6 +2,13 @@ const express = require('express');
 const bcryptjs = require('bcryptjs');
 const jwt = require('jsonwebtoken');
 const cors = require('cors');
+const io = require('socket.io')(
+    8080, {
+        cors:{
+            origin: 'http://localhost:5173',
+        }
+    }
+)
 //connect db
 require('./db/connection');
 
@@ -19,6 +26,40 @@ const port = process.env.PORT || 8000;
 app.use(express.json());
 app.use(express.urlencoded({extended: false}));
 app.use(cors());
+ 
+//socket io
+let users =[];
+io.on('connection', socket =>{
+    console.log('User connected' , socket.id);
+    socket.on('addUser', userId =>{
+        const isUserExist = users.find(user => user.userId === userId);
+        if(!isUserExist){
+            const user = {userId, socketId:socket.id};
+            users.push(user)
+            io.emit('getUsers',users);
+        }
+    });
+
+    socket.on('sendMessage',  async ({ senderId, receiverId, message, conversationId}) =>{
+        const receiver = users.find(user => user.userId === receiverId);
+        const sender = users.find(user => user.userId === senderId)
+        const user = await Users.findById(senderId);
+        if(receiver){
+            io.to(receiver.socketId).to(sender.socketId).emit('getMessage',{
+                senderId,
+                message,
+                conversationId, receiverId,
+                user: {id: user._id, fullName: user.fullName, email: user.email}
+            });
+        }
+    })
+    
+    socket.on('disconnect', () =>{
+        users = users.filter(user => user.socketId !== socket.id);
+        io.emit('getUsers', users);
+    })
+})
+
 //routes
 app.get('/', (req,  res) =>{
     res.send('Welcome');
@@ -143,13 +184,15 @@ app.post('/api/message', async (req, res) => {
             await newConversation.save();
             const newMessage = new Messages({conversationId: newConversation._id, senderId, message});
             await newMessage.save();
-            return res.status(200).send('Message sent successfully');
+            return res.status(200).json({ message: 'Message sent successfully' });
+
         }else if(!conversationId && !receiverId){
             return res.status(400).send('Please fill all required fields');
         }
         const newMessage = new Messages({conversationId, senderId, message});
             await newMessage.save();
-            return res.status(200).send('Message sent successfully');
+            return res.status(200).json({ message: 'Message sent successfully' });
+
        
     } catch (error) {
         console.log("Error:", error);
@@ -160,6 +203,7 @@ app.post('/api/message', async (req, res) => {
 
 app.get('/api/message/:conversationId', async (req, res) =>{
     try {
+        debugger;
         const checkMessages = async (conversationId) =>{
             const messages = await Messages.find({conversationId});
         const messageUserData = Promise.all(messages.map(async (message) => {
@@ -172,10 +216,10 @@ app.get('/api/message/:conversationId', async (req, res) =>{
         const  conversationId = req.params.conversationId;
         if(conversationId == 'new'){
             const checkConversation = await Conversation.find({members: {
-                $in: [req.body.senderId, req.body.recieverId]
+                $all: [req.query.senderId, req.query.receiverId]
             }})
             if(checkConversation.length > 0) {
-                checkMessages( checkConversation[0]._id);
+                checkMessages(checkConversation[0]._id);
             }
             
             else{

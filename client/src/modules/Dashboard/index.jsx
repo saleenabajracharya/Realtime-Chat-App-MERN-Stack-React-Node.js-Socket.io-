@@ -2,7 +2,8 @@ import { IoCallOutline } from "react-icons/io5";
 import { Input } from "../../components/Input";
 import { IoIosSend } from "react-icons/io";
 import { CiCirclePlus } from "react-icons/ci";
-import { useEffect, useState } from "react";
+import { useEffect, useRef, useState } from "react";
+import { io} from "socket.io-client"
 
 export const Dashboard = () => {
 
@@ -52,44 +53,110 @@ export const Dashboard = () => {
   const [messages, setMessages] = useState({});
   const [message, setMessage]= useState('');
   const [users, setUsers] = useState([]);
+  const [socket, setSocket] = useState(null);
+  const messageRef = useRef(null);
+
+  console.log('messages:>>', messages);
+
+  useEffect(() => {
+    setSocket(io('http://localhost:8080'))
+  }, [])
+
+  useEffect(() => {
+    if (!socket) return;
+
+    socket?.emit('addUser', user?.id);
+
+    socket?.on('getUsers', (users) => {
+        console.log('activeUsers:>>', users);
+    });
+
+    // Use a single event listener
+    const handleMessage = (data) => {
+        console.log('Received message:', data);
+        setMessages((prev) => ({
+            ...prev,
+            messages: [...prev.messages, { user: { id: data.senderId }, message: data.message }]
+        }));
+    };
+
+    socket?.on('getMessage', handleMessage);
+
+    return () => {
+        socket.off('getUsers');
+        socket.off('getMessage', handleMessage);
+    };
+}, [socket]);
+
+
 
   const fetchMessages = async (conversationId, receiver) => {
-    try {
-      if (!receiver?.receiverId) return console.error("Receiver ID is missing");
-
-      const res = await fetch(`http://localhost:8000/api/message/${conversationId}?senderId=${user?.id}&&receiverId=${receiver?.receiverId}`, {
-        method: 'GET',
-        headers: {
-          'Content-Type': 'application/json',
-        },
-      });
-    const resData = await res.json();
-      console.log(resData);
-      setMessages({messages: resData,receiver, conversationId});
-    } catch (error) {
-      console.error("Fetch error:", error);
-    }
-  };
-
-  const sendMessage = async (e) => {
-    console.log('sendMesssage >>', message, messages?.conversationId, user?.id, messages?.receiver?.receiverId)
-    debugger;
-    const res = await fetch(`http://localhost:8000/api/message`, {
-      method: 'POST',
+    const res = await fetch(`http://localhost:8000/api/message/${conversationId}?senderId=${user?.id}&&receiverId=${receiver?.receiverId}`, {
+      method: 'GET',
       headers: {
         'Content-Type': 'application/json',
       },
-      body: JSON.stringify({
-        conversationId: messages?.conversationId,
-        senderId: user?.id,
-        message,
-        receiverId: messages?.receiver?.receiverId
-      })
     });
-    const resData = await res.json();
-    console.log('resData :>>', resData);
-    setMessage('')
-  }
+    
+    const text = await res.text(); // Read response as text
+    try {
+      const resData = JSON.parse(text); // Attempt to parse JSON
+      setMessages({ messages: resData, receiver, conversationId });
+    } catch (error) {
+      console.error("Invalid JSON response:", text);
+    }
+    
+  };
+
+  const [isSending, setIsSending] = useState(false); 
+
+  const sendMessage = async (e) => {
+      e.preventDefault();
+      
+      if (!message.trim() || isSending) return; 
+  
+      setIsSending(true); 
+  
+      const newMessage = {
+          senderId: user?.id,
+          receiverId: messages?.receiver?.receiverId,
+          message,
+          conversationId: messages?.conversationId
+      };
+  
+      socket?.emit('sendMessage', newMessage);
+  
+      console.log('sendMessage >>', newMessage);
+
+      setMessages((prev) => ({
+          ...prev,
+          messages: [...prev.messages, { user: { id: user?.id }, message }]
+      }));
+  
+      setMessage(''); 
+  
+      try {
+          const res = await fetch(`http://localhost:8000/api/message`, {
+              method: 'POST',
+              headers: {
+                  'Content-Type': 'application/json',
+              },
+              body: JSON.stringify(newMessage)
+          });
+  
+          const resData = await res.json();
+          console.log('resData :>>', resData);
+      } catch (error) {
+          console.error("Error sending message:", error);
+      }
+  
+      setIsSending(false); 
+  };
+  
+  useEffect(() =>{
+    messageRef?.current?.scrollIntoView({behaviour: 'smooth'})
+  }, [messages?.messages])
+
 
   useEffect(() =>{
     const fetchUsers = async () =>{
@@ -166,7 +233,10 @@ export const Dashboard = () => {
               messages?.messages?.length > 0 ? 
               messages.messages.map(({message, user:{ id } = {} }) => {
                 return(
+                  <>
                   <div className={` max-w-[40%]  rounded-b-xl  p-4  mb-2 ${id === user?.id ? ' bg-[var(--primary-color)] ml-auto rounded-tl-xl text-white' : 'bg-[var(--secondary-color)] rounded-tr-xl text-black'} `}>{message}</div>
+                  <div ref={messageRef}></div>
+                  </>
                 )
                 
               }) : <div className="text-center text-lg font-semibold mt-25"> Start Conversation</div>
@@ -176,13 +246,13 @@ export const Dashboard = () => {
         {
           messages?.receiver?.fullName && <div className="p-4 w-full flex items-center">
           <Input placeholder="Type a message..." className="w-[75%]" value={message} onChange={(e) => setMessage(e.target.value)} inputClassName="p-4 shadow-m rounded-full bg-light focus:ring-0 focus:border-0 outline-none" />
-          <IoIosSend className={`text-3xl text-[var(--primary-color)] ml-4 mt-2 cursor-pointer ${!message && 'pointer-events-none'} `} onClick={() => sendMessage()}  />
+          <IoIosSend className={`text-3xl text-[var(--primary-color)] ml-4 mt-2 cursor-pointer ${!message && 'pointer-events-none'} `} onClick={(e) => sendMessage(e)}  />
           <CiCirclePlus className={`text-3xl text-[var(--primary-color)] ml-2 mt-2 cursor-pointer ${!message && 'pointer-events-none'}` }/>
 
         </div>
         }
       </div>
-      <div className="w-[25%] h-screen bg-[var(--secondary-color)] px-8 py-14">
+      <div className="w-[25%] h-screen bg-[var(--secondary-color)] px-8 py-14 overflow-y-scroll">
         <div className="text-[var(--primary-color)] text-lg"> People</div>
         <div>
         {
